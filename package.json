@@ -1,0 +1,13 @@
+{
+  "name": "short-video-course-ecpay",
+  "version": "1.0.0",
+  "description": "短影音實戰營報名頁 + 綠界 ECPay 金流串接",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
