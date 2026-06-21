@@ -7,6 +7,16 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false })); // ECPay posts back as form-urlencoded
 app.use(express.static(path.join(__dirname, "public")));
 
+// Escape untrusted values before putting them into HTML (prevents XSS).
+function esc(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // ===== Config (use ECPay public TEST credentials by default) =====
 const CFG = {
   MerchantID: process.env.ECPAY_MERCHANT_ID || "2000132",
@@ -86,7 +96,7 @@ app.post("/api/checkout", (req, res) => {
 
   // --- auto-submitting HTML form ---
   const inputs = Object.entries(params)
-    .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v).replace(/"/g, "&quot;")}">`)
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
     .join("\n");
   res.set("Content-Type", "text/html; charset=utf-8").send(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8"><title>導向付款中…</title>
 <style>body{font-family:sans-serif;background:#0d0d12;color:#fff;display:grid;place-items:center;height:100vh;margin:0}</style></head>
@@ -134,16 +144,22 @@ app.post("/api/ecpay/result", (req, res) => {
 <h1>${paid ? "報名成功！" : "付款未完成"}</h1>
 <p>${paid ? "我們已收到你的報名，確認信將寄送至你的信箱。" : "交易未成功，可回到首頁重新報名。"}</p>
 <div class="kv">
-<div><span>訂單編號</span><strong>${data.MerchantTradeNo || "-"}</strong></div>
-<div><span>金額</span><strong>NT$ ${amount || "-"}</strong></div>
-<div><span>狀態</span><strong>${data.RtnMsg || (paid ? "已付款" : "失敗")}</strong></div>
+<div><span>訂單編號</span><strong>${esc(data.MerchantTradeNo) || "-"}</strong></div>
+<div><span>金額</span><strong>NT$ ${esc(amount) || "-"}</strong></div>
+<div><span>狀態</span><strong>${esc(data.RtnMsg) || (paid ? "已付款" : "失敗")}</strong></div>
 </div>
 <a href="/" class="btn btn-pill btn-block">回到首頁</a>
 </div></body></html>`);
 });
 
-// Optional: order status lookup
+// Admin-only order lookup. Returns buyer PII, so it requires a secret token
+// supplied via the ADMIN_TOKEN env var (set it in Vercel; never commit it).
+// If ADMIN_TOKEN is not configured, the endpoint is disabled entirely.
 app.get("/api/orders/:id", (req, res) => {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (!adminToken) return res.status(404).json({ error: "not found" });
+  const provided = req.get("x-admin-token");
+  if (provided !== adminToken) return res.status(401).json({ error: "unauthorized" });
   const o = ORDERS.get(req.params.id);
   if (!o) return res.status(404).json({ error: "not found" });
   res.json(o);
