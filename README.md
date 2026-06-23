@@ -50,10 +50,41 @@ export ECPAY_AIO_URL=https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5
 export BASE_URL=https://你的網域        # 需可被綠界連到的公開網址
 ```
 
-## 上線前待辦
-- 訂單改存資料庫（目前為記憶體 `Map`，重啟即清空）
-- `notify` 成功後寄送確認信 / 開立電子發票
-- 名額（庫存）改為實際扣減並處理併發
-- 測試卡號請見綠界「測試介接資訊」頁
+## 資料庫（Neon / Vercel Postgres）
+訂單已改存 Postgres（`store.js`，使用 `@neondatabase/serverless`）。
+未設定連線字串時自動退回記憶體模式，方便本機開發與測試。
+
+在 Vercel 設定：
+1. 專案 → **Storage** → **Create Database** → 選 **Neon (Postgres)** → 建立並連結到本專案。
+2. Vercel 會自動注入 `POSTGRES_URL` / `DATABASE_URL` 環境變數。
+3. 資料表會在第一次有訂單時自動建立（`CREATE TABLE IF NOT EXISTS orders ...`），無需手動 migration。
+
+訂單狀態流程：建立 = `PENDING` → 綠界 `notify` 驗章成功且 `RtnCode=1` → `PAID`（此時寄出確認信，且只寄一次）；失敗 = `FAILED`。
+
+## 確認信（Resend）
+付款成功後由 `mailer.js` 透過 Resend 寄出報名確認信。未設 `RESEND_API_KEY` 時只在 log 印出、不實際寄送。
+
+在 Vercel 設定環境變數：
+```
+RESEND_API_KEY = re_xxxxxxxx          # Resend 後台取得
+MAIL_FROM      = 報名通知 <noreply@你的網域>   # 寄件人需用 Resend 已驗證的網域
+```
+測試階段可先用 Resend 的測試寄件人 `onboarding@resend.dev`（只能寄到你註冊 Resend 的信箱）。
+
+## 切換到正式金流環境
+在 Vercel → Settings → Environment Variables 設定（**勿寫進程式碼、勿 commit**）：
+```
+ECPAY_MERCHANT_ID = 你的 MerchantID
+ECPAY_HASH_KEY    = 你的 HashKey
+ECPAY_HASH_IV     = 你的 HashIV
+ECPAY_AIO_URL     = https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5
+ADMIN_TOKEN       = 一組長隨機字串   # 查詢 GET /api/orders/:id 時需帶 x-admin-token 標頭
+```
+設定後重新部署即生效。`BASE_URL` 可不設，系統會自動用請求網域組出綠界回呼網址。
+
+## 仍建議的後續
+- 名額（庫存）改為在資料庫實際扣減並處理併發
+- 串接電子發票開立
+- 後台訂單列表頁（目前提供單筆查詢 API）
 
 > 測試信用卡（綠界測試環境）：卡號 4311-9522-2222-2222，到期日任一未過期月年，安全碼 222。

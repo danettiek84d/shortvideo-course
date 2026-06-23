@@ -1,6 +1,8 @@
 const express = require("express");
 const path = require("path");
 const { genCheckMacValue, verifyCheckMacValue, ecpayDate, genTradeNo } = require("./ecpay");
+const store = require("./store");
+const { sendConfirmation } = require("./mailer");
 
 const app = express();
 app.use(express.json());
@@ -48,11 +50,8 @@ const SESSIONS = {
   "KH-0830": { title: "短影音實戰營 高雄場 8/30", price: 2980, seats: 18 },
 };
 
-// In-memory order store (replace with a DB in production)
-const ORDERS = new Map();
-
 // ===== Create order -> return auto-submitting ECPay form =====
-app.post("/api/checkout", (req, res) => {
+app.post("/api/checkout", async (req, res) => {
   const { sessionId, qty, name, phone, email } = req.body || {};
   const session = SESSIONS[sessionId];
 
@@ -63,18 +62,19 @@ app.post("/api/checkout", (req, res) => {
   if (!Number.isInteger(n) || n < 1 || n > 10)
     return res.status(400).json({ error: "人數不正確" });
   if (n > session.seats) return res.status(400).json({ error: "超過剩餘名額" });
-  if (!name || !/^09\d{8}$/.test(phone || "") || !/^\S+@\S+\.\S+$/.test(email || ""))
+  if (!name || String(name).length > 60 || !/^09\d{8}$/.test(phone || "") || !/^\S+@\S+\.\S+$/.test(email || ""))
     return res.status(400).json({ error: "報名資料格式不正確" });
 
   const amount = session.price * n;
   const tradeNo = genTradeNo();
   const base = baseUrlFrom(req);
 
-  ORDERS.set(tradeNo, {
-    tradeNo, sessionId, qty: n, amount,
-    buyer: { name, phone, email },
-    status: "PENDING", createdAt: new Date().toISOString(),
-  });
+  try {
+    await store.createOrder({ tradeNo, sessionId, qty: n, amount, name: String(name).trim(), phone, email });
+  } catch (e) {
+    console.error("createOrder failed:", e.message);
+    return res.status(500).json({ error: "建立訂單失敗，請稍後再試" });
+  }
 
   // --- build ECPay params ---
   const params = {
@@ -106,30 +106,36 @@ app.post("/api/checkout", (req, res) => {
 });
 
 // ===== ECPay server-to-server notification (ReturnURL) =====
-app.post("/api/ecpay/notify", (req, res) => {
+app.post("/api/ecpay/notify", async (req, res) => {
   const data = req.body || {};
   const ok = verifyCheckMacValue(data, CFG.HashKey, CFG.HashIV);
-  const order = ORDERS.get(data.MerchantTradeNo);
+  if (!ok) return res.send("0|CheckMacValue Error"); // reject forged callbacks
 
-  if (ok && order && data.RtnCode === "1") {
-    order.status = "PAID";
-    order.paidAt = new Date().toISOString();
-    order.ecpayTradeNo = data.TradeNo;
-    // TODO: send confirmation email / issue e-invoice here
-  } else if (order) {
-    order.status = "FAILED";
-    order.failReason = data.RtnMsg;
+  try {
+    if (data.RtnCode === "1") {
+      // Idempotent: only the first successful notify flips PENDING->PAID and emails.
+      const paidOrder = await store.markPaidIfPending(data.MerchantTradeNo, data.TradeNo);
+      if (paidOrder) {
+        const title = (SESSIONS[paidOrder.sessionId] || {}).title || "課程";
+        await sendConfirmation(paidOrder, title); // mailer swallows its own errors
+      }
+    } else {
+      await store.markFailed(data.MerchantTradeNo, data.RtnMsg);
+    }
+  } catch (e) {
+    console.error("notify handling error:", e.message);
+    // Still ack so ECPay doesn't hammer retries; reconcile later if needed.
   }
-  // ECPay requires the literal string "1|OK" on success.
-  res.send(ok ? "1|OK" : "0|CheckMacValue Error");
+  res.send("1|OK"); // ECPay requires the literal "1|OK"
 });
 
 // ===== Browser redirect after payment (OrderResultURL) -> show result page =====
-app.post("/api/ecpay/result", (req, res) => {
+app.post("/api/ecpay/result", async (req, res) => {
   const data = req.body || {};
   const ok = verifyCheckMacValue(data, CFG.HashKey, CFG.HashIV);
   const paid = ok && data.RtnCode === "1";
-  const order = ORDERS.get(data.MerchantTradeNo);
+  let order = null;
+  try { order = await store.getOrder(data.MerchantTradeNo); } catch (_) {}
   const amount = order ? order.amount : data.TradeAmt;
 
   res.set("Content-Type", "text/html; charset=utf-8").send(`<!DOCTYPE html><html lang="zh-Hant"><head>
@@ -155,14 +161,18 @@ app.post("/api/ecpay/result", (req, res) => {
 // Admin-only order lookup. Returns buyer PII, so it requires a secret token
 // supplied via the ADMIN_TOKEN env var (set it in Vercel; never commit it).
 // If ADMIN_TOKEN is not configured, the endpoint is disabled entirely.
-app.get("/api/orders/:id", (req, res) => {
+app.get("/api/orders/:id", async (req, res) => {
   const adminToken = process.env.ADMIN_TOKEN;
   if (!adminToken) return res.status(404).json({ error: "not found" });
   const provided = req.get("x-admin-token");
   if (provided !== adminToken) return res.status(401).json({ error: "unauthorized" });
-  const o = ORDERS.get(req.params.id);
-  if (!o) return res.status(404).json({ error: "not found" });
-  res.json(o);
+  try {
+    const o = await store.getOrder(req.params.id);
+    if (!o) return res.status(404).json({ error: "not found" });
+    res.json(o);
+  } catch (e) {
+    res.status(500).json({ error: "lookup failed" });
+  }
 });
 
 // Only start a listener when run directly (local dev). On Vercel the app is
@@ -173,6 +183,8 @@ if (require.main === module) {
     console.log(`Server on ${CFG.baseUrl || "http://localhost:" + PORT} (port ${PORT})`);
     console.log(`ECPay endpoint: ${CFG.aioUrl}`);
     console.log(`MerchantID: ${CFG.MerchantID}${CFG.MerchantID === "2000132" ? " (ECPay public TEST account)" : ""}`);
+    console.log(`Storage: ${store.usePg ? "Postgres" : "in-memory (no POSTGRES_URL)"}`);
+    console.log(`Email: ${process.env.RESEND_API_KEY ? "Resend" : "disabled (no RESEND_API_KEY)"}`);
   });
 }
 
