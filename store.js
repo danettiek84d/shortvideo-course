@@ -110,6 +110,17 @@ async function markPaidIfPending(tradeNo, ecpayTradeNo) {
   return null;
 }
 
+async function listOrders(limit = 500) {
+  await ensureSchema();
+  if (usePg) {
+    const rows = await sql`SELECT * FROM orders ORDER BY created_at DESC LIMIT ${limit}`;
+    return rows.map(norm);
+  }
+  return [...mem.values()]
+    .map(norm)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
 async function markFailed(tradeNo, reason) {
   await ensureSchema();
   if (usePg) {
@@ -121,4 +132,4 @@ async function markFailed(tradeNo, reason) {
   if (o && o.status === "PENDING") { o.status = "FAILED"; o.failReason = reason; }
 }
 
-module.exports = { usePg, initError, createOrder, getOrder, markPaidIfPending, markFailed };
+module.exports = { usePg, initError, createOrder, getOrder, markPaidIfPending, markFailed, listOrders };

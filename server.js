@@ -172,6 +172,19 @@ app.post("/api/ecpay/result", async (req, res) => {
 // Admin-only order lookup. Returns buyer PII, so it requires a secret token
 // supplied via the ADMIN_TOKEN env var (set it in Vercel; never commit it).
 // If ADMIN_TOKEN is not configured, the endpoint is disabled entirely.
+// Admin: list all orders (requires x-admin-token). Powers the /admin.html page.
+app.get("/api/admin/orders", async (req, res) => {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (!adminToken) return res.status(404).json({ error: "not found" });
+  if (req.get("x-admin-token") !== adminToken) return res.status(401).json({ error: "unauthorized" });
+  try {
+    const orders = await store.listOrders(500);
+    res.json({ orders });
+  } catch (e) {
+    res.status(500).json({ error: "list failed", detail: e.message });
+  }
+});
+
 app.get("/api/orders/:id", async (req, res) => {
   const adminToken = process.env.ADMIN_TOKEN;
   if (!adminToken) return res.status(404).json({ error: "not found" });
