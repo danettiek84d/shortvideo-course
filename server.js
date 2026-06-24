@@ -2,7 +2,7 @@ const express = require("express");
 const path = require("path");
 const { genCheckMacValue, verifyCheckMacValue, ecpayDate, genTradeNo } = require("./ecpay");
 const store = require("./store");
-const { sendConfirmation } = require("./mailer");
+const { sendConfirmation, mailerStatus } = require("./mailer");
 
 const app = express();
 app.use(express.json());
@@ -49,6 +49,17 @@ const SESSIONS = {
   "TP-0802": { title: "短影音實戰營 台北場 8/2", price: 2980, seats: 20 },
   "KH-0830": { title: "短影音實戰營 高雄場 8/30", price: 2980, seats: 18 },
 };
+
+// ===== Health / diagnostics =====
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    node: process.version,
+    storage: store.usePg ? "postgres" : "in-memory",
+    storeInitError: store.initError || null,
+    email: mailerStatus(),
+  });
+});
 
 // ===== Create order -> return auto-submitting ECPay form =====
 app.post("/api/checkout", async (req, res) => {
@@ -174,6 +185,14 @@ app.get("/api/orders/:id", async (req, res) => {
     res.status(500).json({ error: "lookup failed" });
   }
 });
+
+// Catch-all error handler so a thrown error returns JSON instead of crashing.
+app.use((err, req, res, next) => {
+  console.error("unhandled error:", err && err.stack ? err.stack : err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "server error", detail: String(err && err.message) });
+});
+process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e));
 
 // Only start a listener when run directly (local dev). On Vercel the app is
 // imported by api/index.js and invoked as a serverless function.

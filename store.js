@@ -7,14 +7,25 @@ const CONN =
   process.env.DATABASE_URL ||
   process.env.POSTGRES_PRISMA_URL ||
   "";
-const usePg = !!CONN;
 
 let sql = null;
+let usePg = false;
+let initError = null;
 const mem = new Map();
 
-if (usePg) {
-  const { neon } = require("@neondatabase/serverless");
-  sql = neon(CONN); // tagged-template queries return a rows array directly
+// Defensive: a bad driver load or connection string must NOT crash the whole
+// serverless function. Fall back to in-memory and record why.
+if (CONN) {
+  try {
+    const { neon } = require("@neondatabase/serverless");
+    sql = neon(CONN); // tagged-template queries return a rows array directly
+    usePg = true;
+  } catch (e) {
+    initError = "neon init failed: " + e.message;
+    console.error(initError);
+  }
+} else {
+  initError = "no connection string (POSTGRES_URL/DATABASE_URL unset)";
 }
 
 let schemaReady = false;
@@ -110,4 +121,4 @@ async function markFailed(tradeNo, reason) {
   if (o && o.status === "PENDING") { o.status = "FAILED"; o.failReason = reason; }
 }
 
-module.exports = { usePg, createOrder, getOrder, markPaidIfPending, markFailed };
+module.exports = { usePg, initError, createOrder, getOrder, markPaidIfPending, markFailed };
