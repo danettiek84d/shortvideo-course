@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex,nofollow" />
+<title>後台訂單管理｜短影音實戰營</title>
+<style>
+:root{--bg:#0d0d12;--bg2:#15151d;--card:#1c1c26;--line:#2a2a36;--ink:#fff;--muted:#a9aab6;--accent:#ff2e63;--ok:#21c07a;--warn:#ffd24c;--bad:#ff5a5a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Noto Sans TC",system-ui,Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.6}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 18px}
+h1{font-size:1.4rem;font-weight:900}
+.muted{color:var(--muted)}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+input,button{font:inherit}
+input{background:var(--card);border:1px solid var(--line);border-radius:10px;color:var(--ink);padding:10px 12px}
+input:focus{outline:none;border-color:var(--accent)}
+button{cursor:pointer;border:none;border-radius:10px;padding:10px 16px;font-weight:700;background:var(--accent);color:#fff}
+button.ghost{background:var(--card);border:1px solid var(--line);color:var(--ink)}
+button:hover{filter:brightness(1.08)}
+.login{max-width:380px;margin:14vh auto;background:var(--bg2);border:1px solid var(--line);border-radius:18px;padding:32px}
+.login h1{margin-bottom:6px}
+.login p{margin-bottom:18px}
+.login input{width:100%;margin-bottom:12px}
+.login button{width:100%}
+.err{color:var(--bad);font-size:.9rem;min-height:1.2em;margin-top:6px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+@media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.kpi .label{color:var(--muted);font-size:.82rem}
+.kpi .val{font-size:1.7rem;font-weight:900;margin-top:4px}
+.kpi .val.accent{color:var(--warn)}
+.tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.tools input{flex:1;min-width:200px}
+.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:14px}
+table{width:100%;border-collapse:collapse;font-size:.9rem;white-space:nowrap}
+th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line)}
+th{background:var(--bg2);color:var(--muted);font-weight:700;position:sticky;top:0}
+tr:hover td{background:#191923}
+.badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.78rem;font-weight:700}
+.b-paid{background:rgba(33,192,122,.16);color:var(--ok)}
+.b-pending{background:rgba(255,210,76,.16);color:var(--warn)}
+.b-failed{background:rgba(255,90,90,.16);color:var(--bad)}
+.right{text-align:right}
+.empty{padding:40px;text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<!-- Login gate -->
+<div id="login" class="login">
+  <h1>後台訂單管理</h1>
+  <p class="muted">請輸入管理金鑰（ADMIN_TOKEN）</p>
+  <input id="token" type="password" placeholder="ADMIN_TOKEN" autocomplete="off" />
+  <button id="loginBtn">登入</button>
+  <div id="loginErr" class="err"></div>
+</div>
+
+<!-- Dashboard -->
+<div id="app" class="wrap" hidden>
+  <div class="bar">
+    <h1>報名訂單 <span id="count" class="muted" style="font-size:.9rem"></span></h1>
+    <div>
+      <button id="refresh" class="ghost">重新整理</button>
+      <button id="logout" class="ghost">登出</button>
+    </div>
+  </div>
+
+  <div class="cards">
+    <div class="kpi"><div class="label">總報名筆數</div><div id="k-total" class="val">–</div></div>
+    <div class="kpi"><div class="label">已付款</div><div id="k-paid" class="val">–</div></div>
+    <div class="kpi"><div class="label">待付款 / 失敗</div><div id="k-other" class="val">–</div></div>
+    <div class="kpi"><div class="label">已付款營收</div><div id="k-rev" class="val accent">–</div></div>
+  </div>
+
+  <div class="tools">
+    <input id="search" placeholder="搜尋：姓名 / Email / 手機 / 訂單編號" />
+    <select id="statusFilter" style="background:var(--card);border:1px solid var(--line);border-radius:10px;color:#fff;padding:10px 12px">
+      <option value="">全部狀態</option>
+      <option value="PAID">已付款</option>
+      <option value="PENDING">待付款</option>
+      <option value="FAILED">失敗</option>
+    </select>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th>建立時間</th><th>訂單編號</th><th>場次</th><th>姓名</th><th>手機</th><th>Email</th>
+        <th class="right">人數</th><th class="right">金額</th><th>狀態</th><th>付款時間</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty" hidden>沒有符合的訂單</div>
+  </div>
+</div>
+
+<script>
+const SESSION_TITLES = {
+  "TC-0621":"台中場 6/21","KH-0628":"高雄場 6/28","TP-0705":"台北場 7/5",
+  "TC-0719":"台中場 7/19","TP-0802":"台北場 8/2","KH-0830":"高雄場 8/30"
+};
+const $ = (id) => document.getElementById(id);
+let ALL = [];
+const ntd = (n) => "NT$ " + Number(n||0).toLocaleString("en-US");
+const esc = (s) => String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = (t) => t ? new Date(t).toLocaleString("zh-TW",{hour12:false}) : "–";
+const getToken = () => sessionStorage.getItem("adminToken") || "";
+
+async function load() {
+  const token = getToken();
+  if (!token) return showLogin();
+  try {
+    const r = await fetch("/api/admin/orders", { headers: { "x-admin-token": token } });
+    if (r.status === 401 || r.status === 404) {
+      sessionStorage.removeItem("adminToken");
+      return showLogin(r.status === 401 ? "金鑰錯誤，請重新輸入" : "後台未啟用（伺服器未設定 ADMIN_TOKEN）");
+    }
+    if (!r.ok) throw new Error("讀取失敗 (" + r.status + ")");
+    const data = await r.json();
+    ALL = data.orders || [];
+    showApp();
+    render();
+  } catch (e) {
+    showLogin("讀取失敗：" + e.message);
+  }
+}
+
+function showLogin(msg) {
+  $("app").hidden = true;
+  $("login").hidden = false;
+  $("loginErr").textContent = msg || "";
+}
+function showApp() { $("login").hidden = true; $("app").hidden = false; }
+
+function render() {
+  const q = $("search").value.trim().toLowerCase();
+  const sf = $("statusFilter").value;
+  let rows = ALL.filter(o => {
+    if (sf && o.status !== sf) return false;
+    if (!q) return true;
+    return [o.name, o.email, o.phone, o.tradeNo].some(v => String(v||"").toLowerCase().includes(q));
+  });
+
+  // KPIs (over ALL, not filtered)
+  const paid = ALL.filter(o => o.status === "PAID");
+  $("k-total").textContent = ALL.length;
+  $("k-paid").textContent = paid.length;
+  $("k-other").textContent = ALL.length - paid.length;
+  $("k-rev").textContent = ntd(paid.reduce((s,o)=>s + Number(o.amount||0), 0));
+  $("count").textContent = "（顯示 " + rows.length + " / " + ALL.length + "）";
+
+  const badge = (s) => s==="PAID" ? '<span class="badge b-paid">已付款</span>'
+    : s==="FAILED" ? '<span class="badge b-failed">失敗</span>'
+    : '<span class="badge b-pending">待付款</span>';
+
+  $("rows").innerHTML = rows.map(o => `<tr>
+    <td>${fmt(o.createdAt)}</td>
+    <td>${esc(o.tradeNo)}</td>
+    <td>${esc(SESSION_TITLES[o.sessionId] || o.sessionId)}</td>
+    <td>${esc(o.name)}</td>
+    <td>${esc(o.phone)}</td>
+    <td>${esc(o.email)}</td>
+    <td class="right">${esc(o.qty)}</td>
+    <td class="right">${ntd(o.amount)}</td>
+    <td>${badge(o.status)}</td>
+    <td>${fmt(o.paidAt)}</td>
+  </tr>`).join("");
+  $("empty").hidden = rows.length > 0;
+}
+
+$("loginBtn").onclick = () => {
+  const t = $("token").value.trim();
+  if (!t) { $("loginErr").textContent = "請輸入金鑰"; return; }
+  sessionStorage.setItem("adminToken", t);
+  load();
+};
+$("token").addEventListener("keydown", e => { if (e.key === "Enter") $("loginBtn").click(); });
+$("refresh").onclick = load;
+$("logout").onclick = () => { sessionStorage.removeItem("adminToken"); showLogin(); };
+$("search").addEventListener("input", render);
+$("statusFilter").addEventListener("change", render);
+
+load();
+</script>
+</body>
+</html>
